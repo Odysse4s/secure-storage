@@ -1,0 +1,31 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test files
+*.test
+*.out
+
+# Data directory (contains encrypted files)
+data/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+*.swp
+*~
+
+# Environment files with secrets
+.env
+.env.local
