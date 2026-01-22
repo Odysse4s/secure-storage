@@ -1,0 +1,26 @@
+services:
+  api:
+    build: .
+    container_name: secure-storage-api
+    restart: unless-stopped
+    ports:
+      # Map Host Port 8080 -> Container Port 8080
+      - "8080:8080"
+    volumes:
+      # PERSISTENCE: Mount the VM folder to the container folder
+      - ./secure_data:/app/data
+    environment:
+      - PORT=8080
+      # We inject the secret key here. NEVER hardcode it in the YAML.
+      - STORAGE_KEY=${STORAGE_KEY}
+    # Security: Drop all capabilities except what is needed
+    cap_drop:
+      - ALL
+    # Security: Run as read-only filesystem (except for the data volume)
+    read_only: true
+    tmpfs:
+      - /tmp
+
+networks:
+  default:
+    driver: bridge
