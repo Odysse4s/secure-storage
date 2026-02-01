@@ -1,212 +1,151 @@
 # SecureStorage-Go
 
-A production-ready REST API for secure file storage with AES-256-GCM encryption at rest. Built with Go using only the standard library.
+![Go Version](https://img.shields.io/badge/Go-1.24-00ADD8?style=flat&logo=go&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Container-2496ED?style=flat&logo=docker&logoColor=white)
+![Security](https://img.shields.io/badge/Security-AES_256_GCM-success?style=flat&logo=security&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-yellow?style=flat)
 
-## Features
+**A production-grade, containerized REST API designed for the secure ingestion and storage of sensitive artifacts.**
 
-- **File Upload & Encryption**: Upload files via REST API, automatically encrypted with AES-256-GCM
-- **Secure File Retrieval**: Download and decrypt files on-the-fly
-- **Path Traversal Protection**: Validates all filenames to prevent directory traversal attacks
-- **Container Ready**: Multi-stage Docker build running as non-root user
-- **No External Dependencies**: Uses only Go standard library
+It implements **authenticated encryption (AES-256-GCM)**, **streaming integrity checks (SHA-256)**, and **token-bucket rate limiting** to ensure data confidentiality, immutability, and system availability.
 
-## Quick Start
+---
+
+##  Architecture
+
+The system utilizes a **Streaming I/O pipeline** to handle large files with constant memory complexity (**O(1)** RAM usage), effectively mitigating Denial of Service (DoS) attacks via memory exhaustion.
+
+```mermaid
+graph LR
+    User[Client] -->|POST /upload| RL[Rate Limiter]
+    RL -->|Allowed| API[API Handler]
+    subgraph "Secure Enclave (Docker)"
+        API -->|Stream Splitter| T[Tee Reader]
+        T -->|Chunk Stream| AES[AES-256-GCM Encryptor]
+        T -->|Chunk Stream| SHA[SHA-256 Hasher]
+        AES -->|Write Encrypted| Disk[(Persistent Storage)]
+        SHA -->|Verify| Integrity[Integrity Check]
+    end
+```
+
+##  Key Features
+
+* ** Authenticated Encryption:** Files are encrypted at rest using **AES-256-GCM**, ensuring both confidentiality and authenticity.
+* **Rx Integrity Verification:** Computes a **SHA-256 checksum** of the plaintext stream during upload and verifies it during decryption to detect bit-rot or tampering.
+* ** DoS Protection:** Implements an in-memory **Token Bucket Rate Limiter** to prevent brute-force attacks and abuse.
+* ** Zero-Copy Streaming:** Decrypts and streams files directly to the client response, enabling the handling of gigabyte-sized files with minimal RAM footprint.
+* ** Hardened Container:** Runs as a non-root user (`appuser`, UID:100) inside a minimal Alpine Linux image with strict file permissions.
+
+---
+
+##  Quick Start
 
 ### Prerequisites
+* **Docker** & **Docker Compose**
+* **OpenSSL** (for secure key generation)
 
-- Go 1.21 or higher
-- Docker (optional, for containerized deployment)
-- Make (optional, for using Makefile commands)
-
-### Running Locally
-
-1. Clone the repository:
+### 1. Installation
+Clone the repository and enter the directory:
 ```bash
-git clone https://github.com/your-username/secure-storage-go.git
-cd secure-storage-go
+git clone [https://github.com/Odysse4s/secure-storage.git](https://github.com/Odysse4s/secure-storage.git)
+cd secure-storage
 ```
 
-2. Set the encryption key (must be exactly 32 characters for AES-256):
+### 2. Security Configuration
+Generate a cryptographically secure 32-byte hexadecimal key. **Do not** use a simple password.
 ```bash
-export STORAGE_KEY="your-32-character-secret-key!!"
+# Generate key and save to .env (excluded from git)
+echo "STORAGE_KEY=$(openssl rand -hex 16)" > .env
 ```
 
-3. Build and run:
+### 3. Deployment
+Build and run the secure enclave using Docker Compose:
 ```bash
-make run
+docker-compose up -d --build
 ```
+*The API is now available at `http://localhost:8080`*
 
-Or without Make:
-```bash
-go build -o bin/server ./cmd/server
-STORAGE_KEY="your-32-character-secret-key!!" ./bin/server
-```
+---
 
-The server starts on port 8080 by default.
+##  API Documentation
 
-### Using Docker
+### 1. Upload File
+Uploads a file, encrypts it, calculates the checksum, and stores it securely.
 
-1. Build the Docker image:
-```bash
-make docker-build
-```
-
-2. Run the container:
-```bash
-docker run -d \
-  --name secure-storage \
-  -p 8080:8080 \
-  -e STORAGE_KEY="your-32-character-secret-key!!" \
-  -v $(pwd)/data:/app/data \
-  secure-storage-go
-```
-
-## API Endpoints
-
-### Upload File
+* **Endpoint:** `POST /upload`
+* **Security:** Rate Limited (1 req/sec burst 3)
 
 ```bash
-POST /upload
-Content-Type: multipart/form-data
-```
-
-Upload a file to be encrypted and stored.
-
-**Example:**
-```bash
-curl -X POST -F "file=@myfile.pdf" http://localhost:8080/upload
+curl -X POST -F "file=@sensitive_contract.pdf" http://localhost:8080/upload
 ```
 
 **Response:**
 ```json
 {
   "success": true,
+  "id": "550e8400-e29b-41d4-a716-446655440000",
   "message": "file uploaded and encrypted successfully"
 }
 ```
 
-### Download File
+### 2. Download File
+Streams the decrypted file content back to the client.
+
+* **Endpoint:** `GET /download/{filename}`
 
 ```bash
-GET /download/{filename}
+# -O saves the file with its original name
+# -J uses the Content-Disposition header
+curl -O -J http://localhost:8080/download/sensitive_contract.pdf
 ```
 
-Retrieve and decrypt a previously uploaded file.
+### 3. Health Check
+Verifies that the API is up and the storage volume is writable.
 
-**Example:**
-```bash
-curl http://localhost:8080/download/myfile.pdf --output myfile.pdf
-```
+* **Endpoint:** `GET /health`
 
-### Health Check
-
-```bash
-GET /health
-```
-
-Check if the service is running.
-
-**Example:**
 ```bash
 curl http://localhost:8080/health
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "healthy"
-}
-```
+---
 
-## Security Features
+##  Security Deep Dive
 
-### AES-256-GCM Encryption
+| Layer | Implementation | Purpose |
+| :--- | :--- | :--- |
+| **Transport** | AES-256-GCM | Prevents attackers from reading data (Confidentiality) and tampering (Integrity). |
+| **Application** | Path Traversal Logic | Sanitizes filenames (regex `^[a-zA-Z0-9._-]+$`) to prevent accessing system files (e.g., `../../etc/passwd`). |
+| **Network** | Rate Limiter | `x/time/rate` middleware blocks abusive IP addresses. |
+| **System** | UID Separation | Container runs as UID 100 (`appuser`), preventing privilege escalation to the host. |
 
-All files are encrypted using AES-256-GCM (Galois/Counter Mode), which provides:
-- **Confidentiality**: Files are encrypted with a 256-bit key
-- **Integrity**: GCM provides authenticated encryption, detecting any tampering
-- **Unique Nonces**: Each file uses a cryptographically random 12-byte nonce
+---
 
-### Path Traversal Prevention
+##  Project Structure
 
-Filenames are validated against:
-- Directory traversal sequences (`..`)
-- Path separators (`/`, `\`)
-- Invalid characters (only alphanumeric, `-`, `_`, `.` allowed)
-
-### Container Security
-
-The Docker container:
-- Uses a multi-stage build to minimize image size
-- Runs as a non-root user (`appuser`)
-- Has health checks configured
-- Uses Alpine Linux for minimal attack surface
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `STORAGE_KEY` | Yes | - | 32-character AES-256 encryption key |
-| `PORT` | No | 8080 | Server port |
-
-## Project Structure
-
-```
+```text
 .
 ├── cmd/
-│   └── server/
-│       └── main.go          # Application entry point
+│   └── server/          # Main entry point (dependency injection)
 ├── internal/
-│   ├── api/
-│   │   └── handlers.go      # HTTP handlers
-│   └── storage/
-│       └── storage.go       # Encryption & file storage logic
-├── data/                    # Encrypted files (created at runtime)
-├── Dockerfile               # Multi-stage Docker build
-├── Makefile                 # Build commands
-├── go.mod                   # Go module definition
-└── README.md               # This file
+│   ├── api/             # HTTP Handlers & Rate Limiting Middleware
+│   └── storage/         # Core Logic: AES-GCM & SHA-256 Streams
+├── secure_data/         # Mounted volume for encrypted artifacts
+├── Dockerfile           # Multi-stage build (Go Builder -> Alpine)
+├── docker-compose.yml   # Infrastructure definition
+└── go.mod               # Dependency definition
 ```
 
-## Development
+---
 
-### Running Tests
+##  Production Considerations
 
-```bash
-make test
-```
+If deploying this to a public environment, consider the following enhancements:
 
-### Building
+1.  **TLS Termination:** Place behind Nginx or Traefik to handle HTTPS/SSL.
+2.  **Key Rotation:** Implement HashiCorp Vault for dynamic secret injection instead of `.env` files.
+3.  **Mutual TLS (mTLS):** Require client certificates for zero-trust service-to-service communication.
 
-```bash
-make build
-```
+## 📄 License
 
-The binary will be created at `bin/server`.
-
-### Cleaning Up
-
-```bash
-make clean
-```
-
-## Production Considerations
-
-1. **Key Management**: Never hardcode the encryption key. Use a secrets manager like HashiCorp Vault or cloud provider secret services.
-
-2. **HTTPS**: Deploy behind a reverse proxy (nginx, Traefik) with TLS termination.
-
-3. **Rate Limiting**: Add rate limiting for upload endpoints to prevent abuse.
-
-4. **Logging**: In production, consider structured logging and log aggregation.
-
-5. **Backup**: Implement backup strategies for the `data/` directory.
-
-## License
-
-MIT License - feel free to use this for your portfolio or projects.
-
-## Author
-
-Built as a demonstration of secure file storage patterns and DevSecOps practices.
+MIT License - Built by **Odysseas Avdikos** as a demonstration of Secure Systems Engineering.
